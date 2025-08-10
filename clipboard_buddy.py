@@ -1,6 +1,8 @@
+# clipboard_buddy_pro.py
 import os, json, csv, time, threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkinter.scrolledtext import ScrolledText
 import pyperclip, keyboard
 
 APP_NAME = "ClipboardBuddyPro"
@@ -43,7 +45,7 @@ def load_data():
         data = DEFAULT_DATA.copy()
     # Nunca persistimos el grupo virtual
     data.pop(VIRTUAL_ALL, None)
-    # Convierte valores a listas de str limpias
+    # Normaliza listas de texto
     for g, msgs in list(data.items()):
         if not isinstance(msgs, list):
             data[g] = []
@@ -62,9 +64,7 @@ def all_group_names(data):
     return [VIRTUAL_ALL] + names
 
 def all_messages_pairs(data):
-    """
-    Devuelve lista de tuplas (grupo, mensaje) para el grupo virtual.
-    """
+    """ Devuelve lista de tuplas (grupo, mensaje) para el grupo virtual. """
     pairs = []
     for g, msgs in data.items():
         if g == VIRTUAL_ALL:
@@ -98,7 +98,6 @@ def import_from_csv(filepath, data, replace=False):
             g = str(row["group"]).strip()
             m = str(row["message"])
             if not g:
-                # fila sin grupo -> la ignoramos
                 continue
             lst = new_data.setdefault(g, [])
             if m not in lst:
@@ -106,6 +105,75 @@ def import_from_csv(filepath, data, replace=False):
 
     new_data.pop(VIRTUAL_ALL, None)
     return new_data
+
+# ---------- Diálogo multilinea para agregar/editar mensajes ----------
+class MultilineInputDialog(tk.Toplevel):
+    """
+    Diálogo modal con caja de texto multilinea (wrap por palabras).
+    - Ctrl+Enter: Guardar
+    - Esc: Cancelar
+    """
+    def __init__(self, parent, title="Mensaje", initial_text=""):
+        super().__init__(parent)
+        self.title(title)
+        self.attributes("-topmost", True)
+        self.resizable(True, True)
+        self.result = None
+
+        # Ventana modal centrada relativa al parent
+        self.transient(parent)
+        self.grab_set()
+
+        # Layout
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        hint = ttk.Label(self, text="Escribe el mensaje tal como lo pegarías. Enter = salto de línea. Ctrl+Enter = Guardar.")
+        hint.grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
+
+        self.text = ScrolledText(self, wrap="word", width=80, height=18)
+        self.text.grid(row=1, column=0, sticky="nsew", padx=10)
+        if initial_text:
+            self.text.insert("1.0", initial_text)
+
+        btns = ttk.Frame(self)
+        btns.grid(row=2, column=0, sticky="e", padx=10, pady=10)
+
+        save_btn = ttk.Button(btns, text="Guardar (Ctrl+Enter)", command=self.on_save)
+        cancel_btn = ttk.Button(btns, text="Cancelar (Esc)", command=self.on_cancel)
+        save_btn.pack(side="left", padx=(0,8))
+        cancel_btn.pack(side="left")
+
+        # Bindings
+        self.bind("<Escape>", lambda e: self.on_cancel())
+        self.bind("<Control-Return>", lambda e: self.on_save())
+
+        # Intento de posición cerca del mouse
+        try:
+            x, y = self.winfo_pointerx(), self.winfo_pointery()
+            self.geometry(f"+{max(0, x-420)}+{max(0, y-300)}")
+        except:
+            pass
+
+        self.text.focus_set()
+        self.wait_window(self)
+
+    def on_save(self):
+        # end-1c evita el salto de línea final automático de Text
+        content = self.text.get("1.0", "end-1c")
+        if not content.strip():
+            if not messagebox.askyesno("Mensaje vacío", "El contenido está vacío. ¿Guardar igualmente?"):
+                return
+        self.result = content
+        self.destroy()
+
+    def on_cancel(self):
+        self.result = None
+        self.destroy()
+
+def ask_multiline(parent, title, initial=""):
+    dlg = MultilineInputDialog(parent, title=title, initial_text=initial)
+    return dlg.result
 
 # ---------- UI: Popup de pegado rápido ----------
 class Popup(tk.Toplevel):
@@ -177,15 +245,17 @@ class Popup(tk.Toplevel):
         items = []
         if g == VIRTUAL_ALL:
             for grp, msg in all_messages_pairs(self.app.data):
-                display = f"[{grp}] {msg}"
+                # En la lista mostramos una sola línea (para no romper el listbox);
+                # los saltos de línea se reemplazan por ⏎ para indicarlo visualmente.
+                disp = f"[{grp}] " + (msg.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ⏎ "))
                 if not q or (q in msg.lower() or q in grp.lower()):
-                    items.append((display, msg))
+                    items.append((disp, msg))
         else:
             msgs = self.app.data.get(g, [])
             for msg in msgs:
-                display = msg
+                disp = msg.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ⏎ ")
                 if not q or q in msg.lower():
-                    items.append((display, msg))
+                    items.append((disp, msg))
         return items
 
     def refresh_list(self, *args):
@@ -224,7 +294,6 @@ class Popup(tk.Toplevel):
 
     def open_manager(self):
         self.app.open_manager()
-        # El gestor actualizará este popup mediante refresh_all_popups()
 
     def close(self):
         self.destroy()
@@ -236,7 +305,7 @@ class ManagerWindow(tk.Toplevel):
         self.app = app
         self.title("Gestor de grupos y mensajes")
         self.attributes("-topmost", True)
-        self.geometry("780x420")
+        self.geometry("820x460")
         self.configure(padx=10, pady=10)
         self.resizable(True, True)
 
@@ -285,7 +354,6 @@ class ManagerWindow(tk.Toplevel):
         del_m_btn = ttk.Button(msg_frame, text="Eliminar mensaje", command=self.delete_message)
         add_m_btn.grid(row=2, column=0, sticky="ew", padx=6, pady=2)
         edit_m_btn.grid(row=2, column=1, sticky="ew", padx=6, pady=2)
-
         del_m_btn.grid(row=3, column=0, columnspan=2, sticky="ew", padx=6, pady=2)
 
         # Botones Import/Export
@@ -330,7 +398,9 @@ class ManagerWindow(tk.Toplevel):
         q = self.msg_search_var.get().strip().lower()
         for m in msgs:
             if not q or q in m.lower():
-                self.messages_list.insert(tk.END, m)
+                # Mostrar indicadores de salto de línea en la lista
+                disp = m.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ⏎ ")
+                self.messages_list.insert(tk.END, disp)
         self.app.refresh_all_popups()
 
     def add_group(self):
@@ -390,16 +460,34 @@ class ManagerWindow(tk.Toplevel):
         self.refresh_groups()
         self.refresh_messages()
 
+    def _selected_message_raw(self):
+        """ Devuelve el mensaje original (no la versión con '⏎ ') según selección. """
+        g = self.get_selected_group()
+        if not g:
+            return None, None, None
+        idxs = self.messages_list.curselection()
+        if not idxs:
+            return g, None, None
+        # Reconstruimos el mensaje comparando contra la lista original del grupo,
+        # porque en el listbox mostramos ' ⏎ ' en vez de '\n'.
+        displayed = self.messages_list.get(idxs[0])
+        candidates = self.app.data.get(g, [])
+        for i, original in enumerate(candidates):
+            if displayed == original.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ⏎ "):
+                return g, i, original
+        # Si no encontramos coincidencia (poco probable), usamos el índice directo como fallback.
+        try:
+            return g, idxs[0], candidates[idxs[0]]
+        except:
+            return g, None, None
+
     def add_message(self):
         g = self.get_selected_group()
         if not g:
             messagebox.showinfo("Atención", "Seleccioná un grupo.")
             return
-        text = simpledialog.askstring("Agregar mensaje", "Mensaje:", parent=self)
+        text = ask_multiline(self, title="Agregar mensaje", initial="")
         if text is None:
-            return
-        text = text.strip()
-        if not text:
             return
         if text in self.app.data[g]:
             if not messagebox.askyesno("Duplicado", "Ese mensaje ya existe en el grupo. ¿Agregar de todos modos?"):
@@ -409,48 +497,35 @@ class ManagerWindow(tk.Toplevel):
         self.refresh_messages()
 
     def edit_message(self):
-        g = self.get_selected_group()
+        g, pos, old = self._selected_message_raw()
         if not g:
             messagebox.showinfo("Atención", "Seleccioná un grupo.")
             return
-        idxs = self.messages_list.curselection()
-        if not idxs:
+        if pos is None:
             messagebox.showinfo("Atención", "Seleccioná un mensaje.")
             return
-        old = self.messages_list.get(idxs[0])
-        new = simpledialog.askstring("Editar mensaje", "Nuevo contenido:", initialvalue=old, parent=self)
+        new = ask_multiline(self, title="Editar mensaje", initial=old)
         if new is None:
             return
-        new = new.strip()
-        if not new:
-            return
-        # Reemplaza en lista
-        try:
-            li = self.app.data[g]
-            pos = li.index(old)
-            li[pos] = new
-            save_data(self.app.data)
-            self.refresh_messages()
-        except ValueError:
-            pass
+        self.app.data[g][pos] = new
+        save_data(self.app.data)
+        self.refresh_messages()
 
     def delete_message(self):
-        g = self.get_selected_group()
+        g, pos, old = self._selected_message_raw()
         if not g:
             messagebox.showinfo("Atención", "Seleccioná un grupo.")
             return
-        idxs = self.messages_list.curselection()
-        if not idxs:
+        if pos is None:
             messagebox.showinfo("Atención", "Seleccioná un mensaje.")
             return
-        msg = self.messages_list.get(idxs[0])
         if not messagebox.askyesno("Confirmar", "¿Eliminar el mensaje seleccionado?"):
             return
         try:
-            self.app.data[g].remove(msg)
+            del self.app.data[g][pos]
             save_data(self.app.data)
             self.refresh_messages()
-        except ValueError:
+        except Exception:
             pass
 
     def export_csv(self):
