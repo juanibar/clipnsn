@@ -17,9 +17,7 @@ def appdata_path():
     os.makedirs(folder, exist_ok=True)
     return folder
 
-# Guardar junto al script (misma carpeta que el .py / .exe)
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SNIPPETS_FILE = os.path.join(BASE_DIR, "snippets.json")
+SNIPPETS_FILE = os.path.join(appdata_path(), "snippets.json")
 
 DEFAULT_DATA = {
     "General": [
